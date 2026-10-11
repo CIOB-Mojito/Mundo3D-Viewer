@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d12">
+<title>Visor 3D</title>
+<style>
+  :root{
+    --bg:#0b0d12;
+    --panel:rgba(20,23,32,.86);
+    --panel-border:rgba(255,255,255,.10);
+    --text:#eef1f7;
+    --muted:#9aa3b5;
+    --accent:#4f8cff;
+    --accent-soft:rgba(79,140,255,.18);
+    --danger:#ff5d6c;
+    --safe-b:env(safe-area-inset-bottom,0px);
+  }
+  html.light{
+    --bg:#eef1f6;
+    --panel:rgba(255,255,255,.9);
+    --panel-border:rgba(0,0,0,.10);
+    --text:#12151c;
+    --muted:#5a6272;
+    --accent:#2f6bff;
+    --accent-soft:rgba(47,107,255,.14);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+    overscroll-behavior:none;touch-action:none;}
+  #app{position:fixed;inset:0;display:flex;flex-direction:column;}
+  /* ---------- Topbar ---------- */
+  #topbar{position:absolute;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;
+    justify-content:space-between;gap:10px;padding:calc(10px + env(safe-area-inset-top,0px)) 12px 10px;
+    pointer-events:none;}
+  .chip{pointer-events:auto;display:flex;align-items:center;gap:8px;background:var(--panel);
+    border:1px solid var(--panel-border);border-radius:14px;padding:8px 12px;backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);font-size:14px;font-weight:600;max-width:62vw;}
+  #modelName{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);flex:0 0 auto;}
+  .dot.busy{background:#ffb020;animation:pulse 1s infinite;}
+  .dot.err{background:var(--danger);}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .iconbtn{pointer-events:auto;width:44px;height:44px;border-radius:12px;background:var(--panel);
+    border:1px solid var(--panel-border);color:var(--text);display:grid;place-items:center;
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);cursor:pointer;}
+  .iconbtn svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round;}
+  .iconbtn:active{transform:scale(.94);}
+  /* ---------- Canvas ---------- */
+  #view{position:absolute;inset:0;z-index:0;display:block;width:100%;height:100%;touch-action:none;}
+  /* ---------- Loader ---------- */
+  #loading{position:absolute;inset:0;z-index:30;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:16px;background:rgba(11,13,18,.72);
+    backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:opacity .3s;padding:24px;text-align:center;}
+  #loading.hidden{opacity:0;pointer-events:none;}
+  .spinner{width:52px;height:52px;border-radius:50%;border:4px solid rgba(255,255,255,.18);
+    border-top-color:var(--accent);animation:spin .9s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #loadText{font-size:15px;color:var(--text);font-weight:600;}
+  #loadPct{font-size:13px;color:var(--muted);}
+  #progressWrap{width:min(320px,80vw);height:6px;border-radius:6px;background:rgba(255,255,255,.15);overflow:hidden;}
+  #progressBar{height:100%;width:0;background:var(--accent);transition:width .2s;}
+  /* ---------- Error ---------- */
+  #errorBox{display:none;max-width:460px;background:var(--panel);border:1px solid var(--danger);
+    border-radius:16px;padding:18px;text-align:left;}
+  #errorBox h3{margin:0 0 8px;font-size:16px;color:var(--danger);}
+  #errorBox p{margin:0 0 10px;font-size:13px;line-height:1.5;color:var(--text);}
+  #errorBox code{background:rgba(255,255,255,.10);padding:2px 6px;border-radius:6px;font-size:12px;}
+  #errorBox button{margin-top:6px;background:var(--accent);color:#fff;border:0;border-radius:10px;
+    padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;}
+  /* ---------- Bottom panel ---------- */
+  #panel{position:absolute;left:0;right:0;bottom:0;z-index:20;
+    background:var(--panel);border-top:1px solid var(--panel-border);
+    backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+    padding:12px 12px calc(12px + var(--safe-b));display:flex;flex-direction:column;gap:12px;}
+  #models{display:flex;gap:10px;}
+  .modelbtn{flex:1;min-height:54px;border-radius:14px;border:1px solid var(--panel-border);
+    background:rgba(255,255,255,.05);color:var(--text);font-size:15px;font-weight:600;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;}
+  .modelbtn small{font-size:11px;font-weight:500;color:var(--muted);}
+  .modelbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text);}
+  .modelbtn.active small{color:var(--accent);}
+  #quality{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .qbtn{min-height:40px;border-radius:12px;border:1px solid var(--panel-border);
+    background:rgba(255,255,255,.05);color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;}
+  .qbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);}
+  .qbtn:active{transform:scale(.97);}
+  #tools{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;}
+  .tool{min-height:56px;border-radius:14px;border:1px solid var(--panel-border);
+    background:rgba(255,255,255,.05);color:var(--muted);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:4px;font-size:10px;font-weight:600;cursor:pointer;
+    padding:4px;line-height:1.1;text-align:center;}
+  .tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round;}
+  .tool.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);}
+  .tool:active{transform:scale(.95);}
+  /* ---------- Animations row ---------- */
+  #anims{display:flex;align-items:stretch;gap:8px;height:56px;overflow-x:auto;overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;}
+  #anims::-webkit-scrollbar{display:none;}
+  #btnAddAnim{flex:0 0 56px;}
+  .animchip{flex:0 0 auto;min-height:52px;padding:0 14px;border-radius:14px;
+    border:1px solid var(--panel-border);background:rgba(255,255,255,.05);color:var(--muted);
+    font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px;cursor:pointer;white-space:nowrap;}
+  .animchip .led{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.45;}
+  .animchip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);}
+  .animchip.on .led{opacity:1;}
+  .animchip:active{transform:scale(.96);}
+  /* ---------- Animation menu ---------- */
+  #animMenu{position:absolute;left:12px;right:12px;bottom:calc(100% + 8px);z-index:25;
+    background:var(--panel);border:1px solid var(--panel-border);border-radius:16px;padding:12px;
+    backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);display:none;
+    box-shadow:0 10px 30px rgba(0,0,0,.45);}
+  #animMenu.on{display:block;}
+  #animMenu .mtitle{margin:0 0 10px;font-size:13px;font-weight:700;color:var(--text);}
+  #animMenuList{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .menuitem{min-height:46px;border-radius:12px;border:1px solid var(--panel-border);
+    background:rgba(255,255,255,.05);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:6px;}
+  .menuitem:active{transform:scale(.97);}
+  .menuitem .plus{color:var(--accent);font-weight:800;font-size:16px;line-height:1;}
+  #animMenu .mfoot{margin-top:10px;display:flex;gap:8px;}
+  #animMenu .mfoot button{flex:1;min-height:42px;border-radius:12px;border:1px solid var(--panel-border);
+    background:rgba(255,255,255,.05);color:var(--muted);font-weight:600;font-size:13px;cursor:pointer;}
+  #animMenu .mfoot button:active{transform:scale(.97);}
+  #fpsBadge{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));left:50%;
+    transform:translateX(-50%);z-index:21;pointer-events:none;background:var(--panel);
+    border:1px solid var(--panel-border);border-radius:10px;padding:4px 10px;font-size:12px;
+    font-weight:700;color:var(--accent);display:none;font-variant-numeric:tabular-nums;}
+  #fpsBadge.on{display:block;}
+  #hint{position:absolute;left:0;right:0;bottom:362px;z-index:15;text-align:center;
+    font-size:12px;color:var(--muted);padding:0 16px;pointer-events:none;transition:opacity .6s;}
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="view"></canvas>
+  <div id="hint">Arrastra para rotar · Pellizca para zoom · Dos dedos para mover</div>
+
+  <div id="topbar">
+    <div class="chip"><span class="dot" id="statusDot"></span><span id="modelName">—</span></div>
+    <button class="iconbtn" id="btnFps" title="Mostrar FPS" aria-label="Mostrar FPS">
+      <svg viewBox="0 0 24 24"><path d="M3 13h3l2.5-6 3 11 2.5-6H21"/></svg>
+    </button>
+    <button class="iconbtn" id="btnFullscreen" title="Pantalla completa" aria-label="Pantalla completa">
+      <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+    </button>
+  </div>
+  <div id="fpsBadge">— FPS</div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <div id="loadText">Cargando visor…</div>
+    <div id="progressWrap"><div id="progressBar"></div></div>
+    <div id="loadPct"></div>
+    <div id="errorBox">
+      <h3>No se pudo cargar el modelo</h3>
+      <p id="errorMsg"></p>
+      <p id="errorHint"></p>
+      <button id="btnRetry">Reintentar</button>
+    </div>
+  </div>
+
+  <div id="panel">
+    <div id="models">
+      <button class="modelbtn active" data-model="Carro.glb" data-label="Carro">Carro<small>Carro.glb · 6 MB</small></button>
+      <button class="modelbtn" data-model="conejo.glb" data-label="Conejo">Conejo<small>conejo.glb · 26 MB</small></button>
+      <button class="modelbtn" data-model="Conejoo.glb" data-label="Conejoo">Conejoo<small>Conejoo.glb · 39 MB</small></button>
+    </div>
+    <div id="quality">
+      <button class="qbtn" data-q="calidad">Calidad</button>
+      <button class="qbtn active" data-q="equilibrado">Equilibrado</button>
+      <button class="qbtn" data-q="rendimiento">Rendimiento</button>
+    </div>
+    <div id="anims">
+      <button class="tool" id="btnAddAnim" title="Añadir animación" aria-label="Añadir animación">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        Anim
+      </button>
+    </div>
+    <div id="tools">
+      <button class="tool" id="btnRotate">
+        <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        Rotación
+      </button>
+      <button class="tool" id="btnLight">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        Fondo claro
+      </button>
+      <button class="tool on" id="btnGround">
+        <svg viewBox="0 0 24 24"><path d="M3 20h18M6 20V9l6-4 6 4v11"/></svg>
+        Suelo
+      </button>
+      <button class="tool" id="btnShadow">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 16v5M12 3v5M4 12h5M15 12h5" opacity=".55"/><path d="M20 20H9"/></svg>
+        Sombras
+      </button>
+      <button class="tool" id="btnReset">
+        <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/><path d="M3 3v5h5"/></svg>
+        Centrar
+      </button>
+    </div>
+    <div id="animMenu">
+      <p class="mtitle">Añadir animación</p>
+      <div id="animMenuList"></div>
+      <div class="mfoot">
+        <button id="btnClearAnims">Quitar todas</button>
+        <button id="btnCloseAnim">Cerrar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const $ = (id) => document.getElementById(id);
+const canvas = $('view');
+const statusDot = $('statusDot');
+const modelName = $('modelName');
+const loadingEl = $('loading');
+const loadText = $('loadText');
+const loadPct = $('loadPct');
+const progressBar = $('progressBar');
+const errorBox = $('errorBox');
+const errorMsg = $('errorMsg');
+const errorHint = $('errorHint');
+const hint = $('hint');
+const panelEl = $('panel');
+const topbarEl = $('topbar');
+const fpsBadge = $('fpsBadge');
+
+const DARK_BG = 0x0b0d12;
+const LIGHT_BG = 0xeef1f6;
+
+// ---- Device detection & quality profiles ------------------------------------
+// Coarse pointer / small screen => treat as mobile and pick a safer profile.
+const isMobile = matchMedia('(pointer: coarse)').matches
+  || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  || Math.min(screen.width, screen.height) < 820;
+
+// dprMax caps renderer.setPixelRatio(); shadows/lights are per-profile effects.
+const QUALITY = {
+  calidad:     { dprMax: 2.0,  shadows: true,  mapSize: 2048, lights: true  },
+  equilibrado: { dprMax: 1.25, shadows: false, mapSize: 1024, lights: true  },
+  rendimiento: { dprMax: 1.0,  shadows: false, mapSize: 512,  lights: false }
+};
+let qualityKey = isMobile ? 'equilibrado' : 'calidad';
+
+let renderer, scene, controls, camera;
+let lights = null;       // { ambient, key, fill, rim }
+let envMap = null;
+let ground = null;
+let current = null;      // { root, file, label }
+let loadToken = 0;       // guards against stale async loads
+let shadowEnabled = false;
+let autoRotate = false;
+let fitInfo = null;      // { radius, size }
+
+// On-demand rendering: only redraw when the camera/scene actually changed.
+let needsRender = true;
+let resizeTimer = null;
+
+// FPS meter (optional, off by default)
+let fpsEnabled = false, fpsCount = 0, fpsPrev = performance.now();
+
+// Procedural animations (no GLB/skeleton dependency: they transform the model
+// root group only). Each instance toggles independently; several can run at once.
+const ANIM_TYPES = {
+  spin:  { name: 'Giro',      amp: 0,    apply: (c) => { c.root.rotation.y = c.base.rot.y + c.t * 1.2 + c.phase; } },
+  float: { name: 'Flotar',    amp: 0.15, apply: (c) => { c.root.position.y = c.base.pos.y + Math.sin(c.t * 1.6 + c.phase) * c.amp; } },
+  rock:  { name: 'Balanceo',  amp: 0,    apply: (c) => { c.root.rotation.z = c.base.rot.z + Math.sin(c.t * 1.3 + c.phase) * 0.16; } },
+  pulse: { name: 'Pulso',     amp: 0,    apply: (c) => {
+            const s = 1 + Math.sin(c.t * 2.2 + c.phase) * 0.06;
+            c.root.scale.set(c.base.scale.x * s, c.base.scale.y * s, c.base.scale.z * s);
+          } },
+  orbit: { name: 'Órbita',    amp: 0.18, apply: (c) => {
+            c.root.position.x = c.base.pos.x + Math.cos(c.t * 1.1 + c.phase) * c.amp;
+            c.root.position.z = c.base.pos.z + Math.sin(c.t * 1.1 + c.phase) * c.amp;
+          } }
+};
+let animInstances = [];   // { key, type, name, active, phase }
+let animSeq = 0;
+let animBase = null;      // rest transform of the current model root
+let animWasActive = false;
+const animCtx = { root: null, base: null, t: 0, phase: 0, amp: 0 };  // reused (no per-frame alloc)
+
+init();
+loadModel('Carro.glb', 'Carro');
+
+/* ============================ SETUP ============================ */
+function init(){
+  renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: !isMobile,          // MSAA is expensive on mobile GPUs
+    powerPreference: 'high-performance'
+  });
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+
+  // Shadows are set up but NOT recomputed every frame: with autoUpdate=false the
+  // depth pass over the (heavy) model only runs once, on demand.
+  renderer.shadowMap.enabled = false;
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = false;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(DARK_BG);
+
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.01, 10000);
+  camera.position.set(0, 2, 6);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.9;
+  controls.zoomSpeed = 0.9;
+  controls.panSpeed = 0.8;
+  controls.screenSpacePanning = true;
+  controls.autoRotateSpeed = 1.8;
+  controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+  controls.addEventListener('change', () => { needsRender = true; });
+
+  // Environment for PBR (IMPORTANT: conejo uses metallicFactor 1). Built once.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environment = envMap;
+  pmrem.dispose();
+
+  addLights();
+  buildGround();
+  bindUI();
+  applyQuality(qualityKey);   // applies pixelRatio, shadows, lights for the profile
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+  document.addEventListener('fullscreenchange', onResize);
+  hideHintOnInteract();
+
+  requestAnimationFrame(loop);   // drive the render loop with rAF (no setAnimationLoop)
+}
+
+function addLights(){
+  const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+  ambient.name = 'ambient';
+  scene.add(ambient);
+
+  const key = new THREE.DirectionalLight(0xffffff, 2.2);
+  key.name = 'key';
+  key.position.set(4, 6, 5);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.camera.near = 0.1;
+  key.shadow.camera.far = 50;
+  key.shadow.bias = -0.0008;
+  key.shadow.normalBias = 0.02;
+  scene.add(key);
+  scene.add(key.target);
+
+  const fill = new THREE.DirectionalLight(0x9fb6ff, 0.9);
+  fill.name = 'fill';
+  fill.position.set(-5, 3, -4);
+  scene.add(fill);
+
+  const rim = new THREE.DirectionalLight(0xffffff, 0.6);
+  rim.name = 'rim';
+  rim.position.set(0, 2, -6);
+  scene.add(rim);
+
+  lights = { ambient, key, fill, rim };
+}
+
+function buildGround(){
+  if (ground) return;
+  const geo = new THREE.CircleGeometry(1, 64);
+  geo.rotateX(-Math.PI/2);
+  const mat = new THREE.MeshStandardMaterial({ color:0x1a1f2b, roughness:0.9, metalness:0.0 });
+  ground = new THREE.Mesh(geo, mat);
+  ground.name = 'ground';
+  ground.receiveShadow = true;
+  ground.visible = true;
+  scene.add(ground);
+}
+
+/* ============================ LOADING ============================ */
+function loadModel(file, label){
+  const token = ++loadToken;
+  showLoading(label);
+
+  // Dispose previous model first (free GPU memory)
+  if (current){
+    disposeModel(current.root);
+    scene.remove(current.root);
+    current = null;
+  }
+
+  const url = new URL(file, location.href).href;
+  const loader = new GLTFLoader();
+
+  loader.load(
+    url,
+    (gltf) => {
+      if (token !== loadToken) { disposeModel(gltf.scene); return; } // stale
+      const root = gltf.scene;
+      root.traverse((o) => {
+        if (o.isMesh){
+          o.castShadow = true;
+          o.receiveShadow = true;
+          if (o.material && 'envMapIntensity' in o.material) o.material.envMapIntensity = 1.0;
+        }
+      });
+      current = { root, file, label };
+      scene.add(root);
+      fitModel(root);
+      // Rest transform for procedural animations (relative to the centered model)
+      animBase = { pos: root.position.clone(), rot: root.rotation.clone(), scale: root.scale.clone() };
+      animWasActive = false;
+      renderer.shadowMap.needsUpdate = true;   // refresh shadow map once for the new model
+      needsRender = true;
+      modelName.textContent = label;
+      statusDot.className = 'dot';
+      hideLoading();
+    },
+    (evt) => {
+      if (token !== loadToken) return;
+      if (evt.total){
+        const p = Math.min(100, Math.round((evt.loaded / evt.total) * 100));
+        progressBar.style.width = p + '%';
+        loadPct.textContent = p + '%  (' + fmtBytes(evt.loaded) + ' / ' + fmtBytes(evt.total) + ')';
+      } else {
+        progressBar.style.width = '100%';
+        loadPct.textContent = fmtBytes(evt.loaded);
+      }
+    },
+    (err) => {
+      if (token !== loadToken) return;
+      showError(file, err);
+    }
+  );
+}
+
+function fitModel(root){
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()){
+    fitInfo = { radius: 1, size: new THREE.Vector3(1, 1, 1) };
+    resetCamera();
+    return;
+  }
+
+  const center = box.getCenter(new THREE.Vector3());
+
+  // Move the model so its REAL bounding-box center sits at the origin.
+  // Only the root transform changes: geometry and materials stay untouched.
+  root.position.sub(center);
+  root.updateWorldMatrix(true, true);
+
+  // Recompute box after centering for accurate bounds and ground placement
+  const box2 = new THREE.Box3().setFromObject(root);
+  const size2 = box2.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size2.x, size2.y, size2.z) || 1;
+
+  // Bounding-sphere radius fits the whole model at ANY orientation
+  const radius = Math.max(size2.length() * 0.5, 0.0001);
+  fitInfo = { radius, size: size2 };
+
+  // Ground sized and placed at model bottom
+  const groundR = Math.max(maxDim * 1.6, radius * 1.2);
+  ground.scale.set(groundR, 1, groundR);
+  ground.position.y = box2.min.y;
+
+  resetCamera();
+}
+
+// Distance so the bounding sphere fits inside BOTH the vertical AND horizontal
+// field of view. On narrow portrait screens the horizontal FOV is the tighter
+// one, so fitting only the vertical FOV used to overflow / clip the model.
+function computeFitDistance(){
+  const radius = fitInfo ? fitInfo.radius : 1;
+  const vFov = THREE.MathUtils.degToRad(camera.fov);
+  const aspect = Math.max(camera.aspect, 0.0001);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+  const fitFov = Math.min(vFov, hFov);
+  return { radius, vFov, dist: (radius / Math.sin(fitFov / 2)) * 1.15 };
+}
+
+// World Y offset for the orbit target so the model appears centred inside the
+// free area (below the top bar, above the bottom control panel) instead of the
+// geometric centre of the screen, which the panel would cover.
+function computeTargetOffsetY(dist, vFov){
+  const H = renderer.domElement.clientHeight || window.innerHeight || 1;
+  const topbarBottom = topbarEl ? topbarEl.getBoundingClientRect().bottom : 0;
+  const panelTop = panelEl ? panelEl.getBoundingClientRect().top : H;
+  const freeCenterY = (topbarBottom + panelTop) / 2;   // px from viewport top
+  const ndcY = 1 - 2 * (freeCenterY / H);              // +1 top, -1 bottom
+  const halfH = dist * Math.tan(vFov / 2);             // world half-height at target
+  return -ndcY * halfH;
+}
+
+function applyProjection(dist, radius){
+  camera.near = Math.max(dist * 0.01, radius * 0.001, 0.0001);
+  camera.far = (dist + radius) * 8;
+  camera.updateProjectionMatrix();
+}
+
+// Full reset: recenter, refit distance and return to a comfortable 3/4 view.
+function resetCamera(){
+  const { radius, vFov, dist } = computeFitDistance();
+  applyProjection(dist, radius);
+
+  const target = new THREE.Vector3(0, computeTargetOffsetY(dist, vFov), 0);
+  const dir = new THREE.Vector3(0.35, 0.30, 1.0).normalize();
+
+  camera.position.copy(target).addScaledVector(dir, dist);
+  controls.target.copy(target);
+  controls.minDistance = radius * 0.2;
+  controls.maxDistance = dist * 5;
+  controls.update();
+
+  updateShadowCamera(radius);
+  needsRender = true;
+}
+
+// Refit after resize / orientation / fullscreen changes, keeping the user's
+// current viewing direction so their rotation is not lost.
+function reframeCamera(preserveDirection){
+  const { radius, vFov, dist } = computeFitDistance();
+  applyProjection(dist, radius);
+
+  const target = new THREE.Vector3(0, computeTargetOffsetY(dist, vFov), 0);
+  let dir = camera.position.clone().sub(controls.target);
+  if (!preserveDirection || dir.lengthSq() < 1e-8){
+    dir = new THREE.Vector3(0.35, 0.30, 1.0);
+  }
+  dir.normalize();
+
+  camera.position.copy(target).addScaledVector(dir, dist);
+  controls.target.copy(target);
+  controls.minDistance = radius * 0.2;
+  controls.maxDistance = dist * 5;
+  controls.update();
+
+  updateShadowCamera(radius);
+  needsRender = true;
+}
+
+function updateShadowCamera(radius){
+  const key = scene.getObjectByName('key');
+  if (!key) return;
+  const cam = key.shadow.camera;
+  const d = radius * 1.6;
+  cam.left = -d; cam.right = d; cam.top = d; cam.bottom = -d;
+  // Keep light close to model bounding sphere
+  key.position.set(radius * 2, radius * 2.5, radius * 2);
+  key.shadow.camera.near = 0.1;
+  key.shadow.camera.far = radius * 12;
+  cam.updateProjectionMatrix();
+  renderer.shadowMap.needsUpdate = true;   // frustum changed: redo the depth pass once
+}
+
+/* ============================ QUALITY ============================ */
+function applyPixelRatio(){
+  const q = QUALITY[qualityKey] || QUALITY.equilibrado;
+  // Never render above the device pixel ratio; cap it per profile.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.dprMax));
+}
+
+function setShadows(on){
+  shadowEnabled = on;
+  renderer.shadowMap.enabled = on;
+  const btn = $('btnShadow');
+  if (btn) btn.classList.toggle('on', on);
+  if (on) renderer.shadowMap.needsUpdate = true;  // one-shot depth pass
+  needsRender = true;
+}
+
+function applyQuality(key){
+  qualityKey = key;
+  const q = QUALITY[key] || QUALITY.equilibrado;
+
+  applyPixelRatio();
+
+  // Extra fill/rim lights are the first thing to drop on low-end profiles.
+  if (lights){
+    lights.fill.visible = q.lights;
+    lights.rim.visible = q.lights;
+  }
+
+  // Resize the shadow map for the profile (frees the old one so it rebuilds).
+  if (lights && lights.key){
+    const k = lights.key;
+    if (k.shadow.mapSize.x !== q.mapSize){
+      k.shadow.mapSize.set(q.mapSize, q.mapSize);
+      if (k.shadow.map){ k.shadow.map.dispose(); k.shadow.map = null; }
+    }
+  }
+
+  setShadows(q.shadows);
+
+  document.querySelectorAll('.qbtn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.q === key);
+  });
+
+  needsRender = true;
+}
+
+/* ============================ FPS METER ============================ */
+function toggleFps(){
+  fpsEnabled = !fpsEnabled;
+  $('btnFps').classList.toggle('on', fpsEnabled);
+  fpsBadge.classList.toggle('on', fpsEnabled);
+  fpsCount = 0;
+  fpsPrev = performance.now();
+  if (fpsEnabled) fpsBadge.textContent = '— FPS';
+}
+
+function updateFps(){
+  fpsCount++;
+  const now = performance.now();
+  const dt = now - fpsPrev;
+  if (dt >= 500){
+    fpsBadge.textContent = Math.round((fpsCount * 1000) / dt) + ' FPS';
+    fpsCount = 0;
+    fpsPrev = now;
+  }
+}
+
+/* ============================ ANIMATIONS ============================ */
+// Build the "+" menu from the available procedural animation types.
+function buildAnimMenu(){
+  const list = $('animMenuList');
+  list.innerHTML = '';
+  for (const [type, def] of Object.entries(ANIM_TYPES)){
+    const b = document.createElement('button');
+    b.className = 'menuitem';
+    b.innerHTML = '<span>' + def.name + '</span><span class="plus">+</span>';
+    b.addEventListener('click', () => addAnimation(type));
+    list.appendChild(b);
+  }
+}
+
+function addAnimation(type){
+  const count = animInstances.filter(i => i.type === type).length + 1;
+  const name = ANIM_TYPES[type].name + (count > 1 ? ' ' + count : '');
+  animInstances.push({ key: 'a' + (++animSeq), type, name, active: false, phase: Math.random() * Math.PI * 2 });
+  renderAnimChips();
+}
+
+// Each added animation gets its own toggle chip in the strip.
+function renderAnimChips(){
+  const strip = $('anims');
+  strip.querySelectorAll('.animchip').forEach(c => c.remove());
+  for (const inst of animInstances){
+    const c = document.createElement('button');
+    c.className = 'animchip' + (inst.active ? ' on' : '');
+    c.dataset.key = inst.key;
+    c.innerHTML = '<span class="led"></span>' + inst.name;
+    c.addEventListener('click', () => {
+      inst.active = !inst.active;
+      c.classList.toggle('on', inst.active);
+      needsRender = true;
+    });
+    strip.appendChild(c);
+  }
+}
+
+function clearAnimations(){
+  animInstances = [];
+  renderAnimChips();
+  needsRender = true;
+}
+
+function toggleAnimMenu(){
+  $('animMenu').classList.toggle('on');
+}
+
+// Apply every ACTIVE animation once per frame. Returns true while any animation
+// is running so the renderer keeps drawing (otherwise it stays on-demand).
+// Always starts from the rest transform, so stopping one animation never
+// affects the others.
+function updateAnimations(){
+  if (!animBase || !current) return false;
+  const anyActive = animInstances.some(i => i.active);
+  if (!anyActive){
+    if (animWasActive){   // restore rest pose once
+      current.root.position.copy(animBase.pos);
+      current.root.rotation.copy(animBase.rot);
+      current.root.scale.copy(animBase.scale);
+      animWasActive = false;
+      needsRender = true;
+    }
+    return false;
+  }
+  animWasActive = true;
+
+  animCtx.root = current.root;
+  animCtx.base = animBase;
+  animCtx.t = performance.now() / 1000;
+  const radius = fitInfo ? fitInfo.radius : 1;
+
+  current.root.position.copy(animBase.pos);
+  current.root.rotation.copy(animBase.rot);
+  current.root.scale.copy(animBase.scale);
+
+  for (const inst of animInstances){
+    if (!inst.active) continue;
+    const def = ANIM_TYPES[inst.type];
+    animCtx.phase = inst.phase;
+    animCtx.amp = radius * (def.amp || 0);
+    def.apply(animCtx);
+  }
+  return true;
+}
+
+/* ============================ DISPOSE ============================ */
+function disposeModel(root){
+  root.traverse((o) => {
+    if (o.isMesh){
+      if (o.geometry) o.geometry.dispose();
+      const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      for (const m of mats){
+        for (const k in m){
+          const v = m[k];
+          if (v && v.isTexture) v.dispose();
+        }
+        m.dispose();
+      }
+    }
+  });
+  if (renderer) renderer.renderLists.dispose();
+}
+
+/* ============================ UI ============================ */
+function bindUI(){
+  document.querySelectorAll('.modelbtn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('active')) return;
+      document.querySelectorAll('.modelbtn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadModel(btn.dataset.model, btn.dataset.label);
+    });
+  });
+
+  $('btnRotate').addEventListener('click', (e) => {
+    autoRotate = !autoRotate;
+    controls.autoRotate = autoRotate;
+    e.currentTarget.classList.toggle('on', autoRotate);
+    needsRender = true;
+  });
+
+  $('btnReset').addEventListener('click', () => {
+    if (current) resetCamera();
+  });
+
+  $('btnLight').addEventListener('click', (e) => {
+    const light = document.documentElement.classList.toggle('light');
+    scene.background.set(light ? LIGHT_BG : DARK_BG);
+    if (ground) ground.material.color.set(light ? 0xd8dde8 : 0x1a1f2b);
+    e.currentTarget.classList.toggle('on', light);
+    needsRender = true;
+  });
+
+  $('btnGround').addEventListener('click', (e) => {
+    const on = !ground.visible;
+    ground.visible = on;
+    e.currentTarget.classList.toggle('on', on);
+    needsRender = true;
+  });
+
+  $('btnShadow').addEventListener('click', () => {
+    setShadows(!shadowEnabled);
+  });
+
+  $('btnFps').addEventListener('click', toggleFps);
+
+  buildAnimMenu();
+  $('btnAddAnim').addEventListener('click', toggleAnimMenu);
+  $('btnCloseAnim').addEventListener('click', () => $('animMenu').classList.remove('on'));
+  $('btnClearAnims').addEventListener('click', () => { clearAnimations(); $('animMenu').classList.remove('on'); });
+  // Close the menu when tapping outside it (e.g. on the 3D view).
+  document.addEventListener('pointerdown', (e) => {
+    if (!$('animMenu').classList.contains('on')) return;
+    if (e.target.closest('#animMenu') || e.target.closest('#btnAddAnim')) return;
+    $('animMenu').classList.remove('on');
+  });
+
+  document.querySelectorAll('.qbtn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('active')) return;
+      applyQuality(btn.dataset.q);
+    });
+  });
+
+  $('btnFullscreen').addEventListener('click', toggleFullscreen);
+  $('btnRetry').addEventListener('click', () => {
+    const active = document.querySelector('.modelbtn.active');
+    if (active) loadModel(active.dataset.model, active.dataset.label);
+  });
+}
+
+function toggleFullscreen(){
+  const el = document.documentElement;
+  if (!document.fullscreenElement){
+    (el.requestFullscreen || el.webkitRequestFullscreen || (()=>{})).call(el);
+  } else {
+    (document.exitFullscreen || document.webkitExitFullscreen || (()=>{})).call(document);
+  }
+  // Layout settles asynchronously; the fullscreenchange listener triggers the
+  // debounced resize, so no extra direct onResize() call is needed here.
+}
+
+function showLoading(label){
+  statusDot.className = 'dot busy';
+  modelName.textContent = label + ' · cargando…';
+  loadingEl.classList.remove('hidden');
+  errorBox.style.display = 'none';
+  loadText.textContent = 'Cargando ' + label + '…';
+  progressBar.style.width = '0%';
+  loadPct.textContent = '';
+}
+
+function hideLoading(){ loadingEl.classList.add('hidden'); }
+
+function showError(file, err){
+  console.error('[Visor3D] Error cargando', file, err);
+  statusDot.className = 'dot err';
+  modelName.textContent = 'Error';
+  loadingEl.classList.remove('hidden');
+  loadText.textContent = '';
+  progressBar.style.width = '0%';
+  loadPct.textContent = '';
+  errorBox.style.display = 'block';
+  const isFile = location.protocol === 'file:';
+  errorMsg.textContent = 'No se pudo cargar "' + file + '". ' + (err && err.message ? err.message : '');
+  errorHint.innerHTML = isFile
+    ? 'Parece que abriste el archivo con <code>file://</code>. Los navegadores bloquean la carga de modelos locales por seguridad. Ejecuta un servidor HTTP local en Termux desde esta carpeta: <code>python3 -m http.server 8080</code> y abre <code>http://localhost:8080/visor-3d.html</code>.'
+    : 'Comprueba que el archivo existe en la misma carpeta y que el servidor está sirviendo <code>.glb</code> correctamente.';
+}
+
+/* ============================ MISC ============================ */
+// Debounced so bursts of resize/orientation/fullscreen events collapse into a
+// single layout + render instead of one per event.
+function onResize(){
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null;
+    const w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w / h;
+    applyPixelRatio();
+    renderer.setSize(w, h, false);
+    reframeCamera(true);
+  }, 120);
+}
+
+// On-demand render loop: rAF keeps running (cheap controls.update), but the GPU
+// only draws when something actually changed (interaction, damping, autorotate
+// or an active animation).
+function loop(){
+  requestAnimationFrame(loop);
+  controls.update();  // returns true while interacting / damping / autorotating
+  const animating = updateAnimations();
+  if (needsRender || controls.autoRotate || animating){
+    renderer.render(scene, camera);
+    needsRender = false;
+    if (fpsEnabled) updateFps();
+  }
+}
+
+let hintHidden = false;
+function hideHintOnInteract(){
+  const hide = () => { if (!hintHidden){ hintHidden = true; hint.style.opacity = '0'; } };
+  canvas.addEventListener('pointerdown', hide, { once:true });
+  setTimeout(hide, 6000);
+}
+
+function fmtBytes(b){
+  if (!b) return '0 B';
+  const u = ['B','KB','MB','GB'];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i];
+}
+</script>
+</body>
+</html>

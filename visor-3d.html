@@ -113,6 +113,10 @@
     stroke-linecap:round;stroke-linejoin:round;}
   .tool.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);}
   .tool:active{transform:scale(.95);}
+  /* ---------- Box open/close control (only for the premium box model) ---------- */
+  #boxControls{display:none;}
+  #boxControls.show{display:block;}
+  #btnBox{width:100%;flex-direction:row;gap:8px;min-height:48px;font-size:13px;}
   /* ---------- Animations row ---------- */
   #anims{display:flex;align-items:stretch;gap:8px;height:56px;overflow-x:auto;overflow-y:hidden;
     -webkit-overflow-scrolling:touch;scrollbar-width:none;}
@@ -192,6 +196,8 @@
         <button class="modelbtn" data-model="Huesped.glb" data-label="Huesped">Huesped<small>Huesped.glb · 953 KB</small></button>
         <button class="modelbtn" data-model="No lo se.glb" data-label="No lo sé">No lo sé<small>No lo se.glb · 33 MB</small></button>
         <button class="modelbtn" data-model="Huesped-v2.glb" data-label="Huesped v2">Huesped v2<small>Huesped-v2.glb · 5 MB</small></button>
+        <button class="modelbtn" data-model="mystery-box-01.glb" data-label="Caja sorpresa">Caja sorpresa<small>mystery-box-01.glb · 3 MB</small></button>
+        <button class="modelbtn" data-model="mystery_box-premiun.glb" data-label="Caja Premium">Caja Premium<small>mystery_box-premiun.glb · 19 MB</small></button>
       </div>
     </div>
     <div id="quality">
@@ -226,6 +232,9 @@
         <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/><path d="M3 3v5h5"/></svg>
         Centrar
       </button>
+    </div>
+    <div id="boxControls">
+      <button class="tool" id="btnBox"><span id="btnBoxLabel">📦 Abrir caja</span></button>
     </div>
     <div id="animMenu">
       <p class="mtitle">Añadir animación</p>
@@ -323,6 +332,81 @@ let animSeq = 0;
 let animBase = null;      // rest transform of the current model root
 let animWasActive = false;
 const animCtx = { root: null, base: null, t: 0, phase: 0, amp: 0 };  // reused (no per-frame alloc)
+
+// Premium box ("Caja Premium"): this GLB ships its own baked opening clip
+// ("Flap_Open_Close", LINEAR, 5.4 s) driving four real flap nodes
+// (Flap_Front/Back/Left/Right). We reuse that clip through a THREE.AnimationMixer and
+// scrub its time with the ORIGINAL choreography phase (open 0 -> 0.45, close travels
+// forward to 0), so the motion is the model's own. The constants below mirror
+// buildBox.ts and are only used to rebuild a faithful clip if one were ever missing.
+let premiumState = null;   // { root, mixer, action, clip, duration, phase, open, animating, lastT, content }
+const PREMIUM_FLAPS = ['Flap_Front', 'Flap_Back', 'Flap_Left', 'Flap_Right'];
+const PREMIUM_PIVOTS = {
+  Flap_Front: { axis: new THREE.Vector3(1, 0, 0), sign:  1 },
+  Flap_Back:  { axis: new THREE.Vector3(1, 0, 0), sign: -1 },
+  Flap_Left:  { axis: new THREE.Vector3(0, 0, 1), sign:  1 },
+  Flap_Right: { axis: new THREE.Vector3(0, 0, 1), sign: -1 }
+};
+const PREMIUM_OPEN_ANGLE = 112 * Math.PI / 180;   // buildBox.ts OPEN_ANGLE (deg -> rad)
+const PREMIUM_CYCLE = 5.4;                         // buildBox.ts CYCLE_SECONDS
+const PREMIUM_HOLD_OPEN = 0.45;                    // buildBox.ts HOLD_OPEN_PHASE
+const PREMIUM_TRAVEL_SPEED = 1 / 3.4;              // buildBox.ts transport: full cycle / 3.4 s
+
+// --- Sequential surprise content of the premium box ---------------------------
+// Every time the box is OPENED it reveals the NEXT eligible model from the
+// viewer's own selector (all models except the two boxes). A session-persistent
+// index advances only on open (never on close) and wraps around at the end.
+// Prepared models are cached and reused; a failed load is logged and skipped so
+// the box never blocks.
+// Cinematic reveal in three beats: (A) the character rises out of the cavity once
+// the flaps have cleared, (B) it glides toward the camera to become the subject,
+// (C) it floats gently in front of / above the box until the user closes it.
+// The close is the mirror: it recedes back over the box, sinks inside, hides.
+// Flap/content timing was validated offline against the buildBox.ts geometry
+// (majors clear the opening by phase 0.21, minors by 0.39); the retreat+descent
+// finishes before the minors close (retreat 300 ms + sink 600 ms = 900 ms < 1.05 s).
+const CONTENT_EXCLUDE = ['mystery-box-01.glb', 'mystery_box-premiun.glb'];
+const CONTENT_CACHE_MAX = 4;       // LRU cap on prepared models (bounds RAM/VRAM on Android)
+let contentSequence = null;        // eligible files in selector order (built lazily from the DOM)
+let contentSeqIndex = 0;           // session-persistent index: advances on every open
+const contentCache = new Map();    // file -> { croot, scale0, contentH } (prepared & reused)
+const CONTENT_OPEN_DELAY = 1100;   // ms after "Abrir caja" until the lift begins (A)
+const CONTENT_RISE_MS = 1000;      // duration of the vertical rise (A)
+const CONTENT_RISE_BOOST = 0.30;   // final rise height: +30% over the base vertical travel (A)
+// (B) approach: glide toward the camera along the live view direction.
+const CONTENT_APPROACH_FRAC = 0.20; // travel = 20% of the camera→object distance (15–25% range)
+const CONTENT_APPROACH_MS = 850;    // duration of the toward-camera move
+const CONTENT_DISPLAY_SCALE = 1.12; // stable exhibition scale once presented (× scale0)
+const CONTENT_CURVE = 0.14;         // gentle lateral curve of the approach (fraction of travel)
+const CONTENT_ARC_LIFT = 0.10;      // gentle upward arc of the approach (fraction of travel)
+// (C) presentation: subtle idle float (reuses the same holder/light/halo — no copies).
+const CONTENT_FLOAT_AMP = 0.10;     // idle float amplitude (fraction of the content height)
+const CONTENT_FLOAT_MS = 4200;      // idle float period
+const CONTENT_PAUSE_MS = 800;       // glow fade at the start of the presentation
+// Close: recede back over the box, then descend into the cavity.
+const CONTENT_RETREAT_MS = 300;     // duration of the retreat (back over the box)
+const CONTENT_SINK_MS = 600;        // duration of the descent (ends before the minors close)
+
+// --- Mystery box ("Caja sorpresa", mystery-box-01.glb) ------------------------
+// This box ships NO usable clip (its embedded "Open_and_Close" has 0 tracks), so
+// its four flap pivots are driven directly with the original builder's staggered
+// choreography (App.tsx setOpen): angle 2.18 rad, open stagger 145 ms, close
+// stagger 105 ms, open 1050 ms, close 820 ms, easeOutCubic. Front/back rotate on
+// the local X axis and left/right on the local Z axis, with signs +, -, +, -.
+// Only one box model is ever loaded at a time, so premiumState and mysteryState
+// never animate together (the open/close button dispatches to whichever exists).
+let mysteryState = null;   // { root, entries, open, animating }
+const MYSTERY_OPEN_ANGLE = 2.18;
+const MYSTERY_OPEN_STAGGER = 145;
+const MYSTERY_CLOSE_STAGGER = 105;
+const MYSTERY_OPEN_MS = 1050;
+const MYSTERY_CLOSE_MS = 820;
+const MYSTERY_FLAPS = [
+  { node: 'Pivot_Flap_Front', axis: 'x', angle:  MYSTERY_OPEN_ANGLE },
+  { node: 'Pivot_Flap_Back',  axis: 'x', angle: -MYSTERY_OPEN_ANGLE },
+  { node: 'Pivot_Flap_Left',  axis: 'z', angle:  MYSTERY_OPEN_ANGLE },
+  { node: 'Pivot_Flap_Right', axis: 'z', angle: -MYSTERY_OPEN_ANGLE }
+];
 
 init();
 loadModel('Carro.glb', 'Carro');
@@ -428,6 +512,7 @@ function buildGround(){
 function loadModel(file, label){
   const token = ++loadToken;
   applyQuality('rendimiento');   // every model open/selection starts at Rendimiento
+  resetBoxes();                  // stop/cache any box controller from the previous model
   showLoading(label);
 
   // Dispose previous model first (free GPU memory)
@@ -455,6 +540,10 @@ function loadModel(file, label){
       current = { root, file, label };
       scene.add(root);
       fitModel(root);
+      setupMysteryBox(root);                    // "Caja sorpresa": four Pivot_Flap_* nodes
+      if (!mysteryState) setupPremiumBox(root, gltf.animations);   // "Caja Premium": baked Flap_Open_Close clip
+      // (the two boxes share the generic Flap_* names on their children, so the
+      //  mystery box — identified by its Pivot_Flap_* nodes — is resolved first)
       // Rest transform for procedural animations (relative to the centered model)
       animBase = { pos: root.position.clone(), rot: root.rotation.clone(), scale: root.scale.clone() };
       animWasActive = false;
@@ -772,6 +861,653 @@ function disposeModel(root){
   if (renderer) renderer.renderLists.dispose();
 }
 
+/* ==================== PREMIUM BOX (reuses the GLB's own clip) ==================== */
+/* --- geometry helpers ------------------------------------------------------- */
+function easeOutCubic(u){ return 1 - Math.pow(1 - u, 3); }
+function easeInOutCubic(u){ return u < 0.5 ? 4*u*u*u : 1 - Math.pow(-2*u + 2, 3) / 2; }
+// Quadratic Bézier p0 -> p1(control) -> p2, evaluated at t and written into `out`.
+function quadBezier(p0, p1, p2, t, out){
+  const m = 1 - t;
+  out.set(0, 0, 0)
+     .addScaledVector(p0, m * m)
+     .addScaledVector(p1, 2 * m * t)
+     .addScaledVector(p2, t * t);
+  return out;
+}
+// The holder lives in the box's LOCAL frame, so all trajectories are authored in
+// local space (robust to any box transform/scale) with local up = +Y.
+const UP_LOCAL = new THREE.Vector3(0, 1, 0);
+
+// AABB of a named node translated into the root's local frame (root-agnostic to
+// the translate/scale/rotate fitModel applies to the model).
+function meshBoxInRoot(root, name){
+  const node = root.getObjectByName(name);
+  if (!node) return null;
+  root.updateWorldMatrix(true, true);
+  const world = new THREE.Box3().setFromObject(node);
+  const v = new THREE.Vector3();
+  const box = new THREE.Box3();
+  const cs = [[world.min.x, world.min.y, world.min.z], [world.max.x, world.min.y, world.min.z],
+              [world.min.x, world.max.y, world.min.z], [world.max.x, world.max.y, world.min.z],
+              [world.min.x, world.min.y, world.max.z], [world.max.x, world.min.y, world.max.z],
+              [world.min.x, world.max.y, world.max.z], [world.max.x, world.max.y, world.max.z]];
+  for (const p of cs){
+    v.set(p[0], p[1], p[2]);
+    root.worldToLocal(v);
+    box.expandByPoint(v);
+  }
+  return { min: box.min, max: box.max, size: box.getSize(new THREE.Vector3()) };
+}
+
+// Usable interior of the premium box (buildBox.ts: DIM 0.24 x 0.18, wall 0.003).
+function premiumCavityMetrics(root){
+  const b = meshBoxInRoot(root, 'Box_Base');
+  if (!b) return null;
+  const wall = 0.003;            // WALL_THICKNESS in buildBox.ts
+  const openingY = b.max.y;      // flaps hinge on the wall top edge
+  const floorTop = b.min.y + wall;
+  return {
+    cx: (b.min.x + b.max.x) / 2,
+    cz: (b.min.z + b.max.z) / 2,
+    cavW: b.size.x * 0.88,                       // internal opening minus side margins
+    cavD: b.size.z * 0.88,
+    cavH: (openingY - floorTop) * 0.85,          // headroom under the hinge line
+    openingY,
+    floorTop
+  };
+}
+
+// Shift a freshly loaded scene so its bbox centre sits on its local origin.
+function centerModelAtOrigin(root){
+  const box = new THREE.Box3().setFromObject(root);
+  root.position.sub(box.getCenter(new THREE.Vector3()));
+}
+
+// Soft radial "glow pad" texture for the halo sprite (one tiny canvas, no assets).
+function makeGlowTexture(){
+  const s = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,220,150,0.55)');
+  g.addColorStop(1, 'rgba(255,200,120,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function setContentGlow(st, v){
+  const c = st.content;
+  if (!c) return;
+  const on = v > 0.01;
+  c.light.visible = on;
+  if (on) c.light.intensity = v * 0.45;   // warm light around the object only
+  c.halo.visible = v > 0.02;
+  if (c.halo.visible) c.halo.material.opacity = Math.min(1, v * 0.75);
+}
+
+/* --- content (sequential surprise characters born inside the premium box) ---- */
+function setupPremiumContent(root){
+  const holder = new THREE.Group();
+  holder.name = 'BoxContentHolder';
+  holder.visible = false;
+  root.add(holder);
+
+  const light = new THREE.PointLight(0xffd9a0, 0, 1.6, 2);
+  light.name = 'BoxContentGlow';
+  light.visible = false;
+  holder.add(light);
+
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: makeGlowTexture(),
+    color: 0xffcf7f,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  }));
+  halo.name = 'BoxContentHalo';
+  halo.scale.set(0.42, 0.42, 1);
+  holder.add(halo);
+
+  const content = premiumState.content = {
+    holder, light, halo, contentRoot: null, cavity: premiumCavityMetrics(root),
+    scale0: 1, insideY: 0, showY: 0, cx: 0, cz: 0, contentH: 0,
+    state: 'hidden', t0: 0, t1: 1, fromY: 0, toY: 0, active: false,
+    pendingToken: 0, failed: false,
+    // local-space trajectory for B (approach) and C (presentation) + close retreat
+    pStartLocal: new THREE.Vector3(), pCtrlLocal: new THREE.Vector3(), pEndLocal: new THREE.Vector3(),
+    floatBase: new THREE.Vector3(), floatPerp: new THREE.Vector3(),
+    retreatFrom: new THREE.Vector3(), retreatCtrl: new THREE.Vector3(), retreatTo: new THREE.Vector3(),
+    floatAmp: 0, floatTick: 0, approachReady: false, fromScale: 1
+  };
+}
+
+// Eligible files, in selector order, minus the two boxes (never the surprise box itself).
+function getContentSequence(){
+  if (contentSequence) return contentSequence;
+  const seen = new Set();
+  contentSequence = [];
+  document.querySelectorAll('.modelbtn').forEach((btn) => {
+    const f = btn.dataset.model;
+    if (!f || CONTENT_EXCLUDE.includes(f) || seen.has(f)) return;
+    seen.add(f);
+    contentSequence.push(f);
+  });
+  return contentSequence;
+}
+
+// Take the next eligible file and advance the session index (wraps at the end).
+function nextContentFile(){
+  const list = getContentSequence();
+  if (!list.length) return null;
+  const file = list[contentSeqIndex % list.length];
+  contentSeqIndex = (contentSeqIndex + 1) % list.length;
+  return file;
+}
+
+// Centre + fit a freshly loaded scene into the box cavity. Returns null if unusable.
+function prepareContentEntry(croot){
+  const b = premiumState && premiumState.content && premiumState.content.cavity;
+  if (!b) return null;
+  croot.traverse((o) => {
+    if (o.isMesh){
+      o.castShadow = true;
+      o.receiveShadow = true;
+      if (o.material && 'envMapIntensity' in o.material) o.material.envMapIntensity = 1.0;
+    }
+  });
+  centerModelAtOrigin(croot);
+  const cs = new THREE.Box3().setFromObject(croot).getSize(new THREE.Vector3());
+  if (cs.x < 1e-6 || cs.y < 1e-6 || cs.z < 1e-6) return null;
+  const scale = Math.min(b.cavW / cs.x, b.cavD / cs.z, b.cavH / cs.y);
+  croot.scale.setScalar(scale);
+  centerModelAtOrigin(croot);   // scaling is about the origin, so re-centre the (now scaled) bbox
+  const contentH = cs.y * scale;
+  const insideY = b.floorTop + contentH / 2 + 0.002;
+  const baseShowY = b.openingY + contentH / 2 + Math.max(0.03, b.cavH * 0.25);
+  return {
+    croot, scale0: scale, contentH, insideY, cx: b.cx, cz: b.cz,
+    showY: baseShowY + CONTENT_RISE_BOOST * (baseShowY - insideY)
+  };
+}
+
+// Keep the prepared-model cache bounded; never evict the character on screen.
+function evictContentCache(){
+  while (contentCache.size > CONTENT_CACHE_MAX){
+    let removed = false;
+    for (const [key, entry] of contentCache){
+      const active = premiumState && premiumState.content && premiumState.content.contentRoot === entry.croot;
+      if (active) continue;
+      if (entry.croot.parent) entry.croot.parent.remove(entry.croot);
+      disposeModel(entry.croot);
+      contentCache.delete(key);
+      removed = true;
+      break;
+    }
+    if (!removed) break;
+  }
+}
+
+// Swap the prepared character into the holder and (re)apply its metrics.
+function applyContentEntry(st, entry){
+  const c = st.content;
+  if (c.contentRoot && c.contentRoot !== entry.croot && c.contentRoot.parent) c.contentRoot.parent.remove(c.contentRoot);
+  c.contentRoot = entry.croot;
+  c.scale0 = entry.scale0;
+  c.contentH = entry.contentH;
+  c.insideY = entry.insideY;
+  c.showY = entry.showY;
+  c.cx = entry.cx;
+  c.cz = entry.cz;
+  entry.croot.scale.setScalar(entry.scale0);
+  c.holder.add(entry.croot);
+  c.holder.position.set(entry.cx, entry.insideY, entry.cz);
+  c.holder.visible = false;   // shown when the rise begins
+  c.failed = false;
+  needsRender = true;
+}
+
+function loadContentGltf(file, onLoad, onError){
+  new GLTFLoader().load(new URL(file, location.href).href, onLoad, undefined, onError);
+}
+
+// On OPEN: advance the session index and load (or reuse) the next eligible model.
+// Failures are logged and skipped, so the box never gets stuck.
+function requestContentForOpen(st){
+  const c = st.content;
+  if (!c) return;
+  if (!c.cavity){ c.failed = true; return; }   // no usable cavity: let the box open empty
+  c.failed = false;
+  c.pendingToken++;
+  const myToken = c.pendingToken;
+  const list = getContentSequence();
+  let attempts = 0;
+
+  const tryOnce = () => {
+    if (premiumState !== st || c.pendingToken !== myToken || !st.open) return;   // superseded/closed
+    if (attempts >= list.length){              // every eligible model failed: don't block the box
+      console.warn('[premium] no eligible content model could be loaded');
+      c.failed = true;
+      return;
+    }
+    attempts++;
+    const file = nextContentFile();
+    if (!file){ c.failed = true; return; }
+    const cached = contentCache.get(file);
+    if (cached){ applyContentEntry(st, cached); return; }
+    loadContentGltf(file,
+      (gltf) => {
+        if (premiumState !== st || c.pendingToken !== myToken){ disposeModel(gltf.scene); return; }
+        const entry = prepareContentEntry(gltf.scene);
+        if (!entry){ disposeModel(gltf.scene); console.warn('[premium] unusable mesh, skipping "' + file + '"'); tryOnce(); return; }
+        contentCache.set(file, entry);
+        evictContentCache();
+        applyContentEntry(st, entry);
+      },
+      (err) => {
+        console.error('[premium] failed to load "' + file + '":', (err && err.message) || err);
+        tryOnce();   // skip to the next eligible model
+      });
+  };
+  tryOnce();
+}
+
+// (B) Build the toward-camera glide at the instant the rise ends, using the LIVE
+// camera orientation (works whatever way the user rotated before opening). The
+// path is baked into the holder's LOCAL space so it follows the box and is immune
+// to scaling/hierarchy issues.
+function beginApproach(c, root, now){
+  root.updateWorldMatrix(true, false);
+  const startWorld = root.localToWorld(new THREE.Vector3(c.cx, c.showY, c.cz));
+  const toCam = camera.position.clone().sub(startWorld);
+  const dist = toCam.length();
+  c.pStartLocal.set(c.cx, c.showY, c.cz);
+  if (dist > 1e-4){
+    toCam.multiplyScalar(1 / dist);
+    const travel = dist * CONTENT_APPROACH_FRAC;         // 20% of the camera→object distance
+    const endWorld = startWorld.clone().addScaledVector(toCam, travel);
+    if (endWorld.y < startWorld.y) endWorld.y = startWorld.y;   // never lose the rise height
+    c.pEndLocal.copy(root.worldToLocal(endWorld));
+  } else {
+    c.pEndLocal.copy(c.pStartLocal);
+  }
+  const dir = c.pEndLocal.clone().sub(c.pStartLocal);
+  const len = Math.max(dir.length(), 1e-6);
+  const mid = c.pStartLocal.clone().addScaledVector(dir, 0.5);
+  const perp = new THREE.Vector3().crossVectors(dir, UP_LOCAL);
+  if (perp.lengthSq() < 1e-8) perp.set(1, 0, 0);
+  perp.normalize();
+  c.pCtrlLocal.copy(mid)
+    .addScaledVector(perp, len * CONTENT_CURVE)   // gentle sideways bow
+    .addScaledVector(UP_LOCAL, len * CONTENT_ARC_LIFT);   // gentle upward bow
+  c.approachReady = true;
+  c.state = 'approach';
+  c.t0 = now; c.t1 = now + CONTENT_APPROACH_MS;
+}
+
+// (C) Land into the idle presentation (stable exhibition scale + slow float).
+function enterPresent(c, now){
+  c.state = 'present';
+  c.t0 = now;
+  c.floatBase.copy(c.pEndLocal);
+  const perp = new THREE.Vector3().crossVectors(c.pEndLocal.clone().sub(c.pStartLocal), UP_LOCAL);
+  if (perp.lengthSq() < 1e-8) perp.set(1, 0, 0);
+  c.floatPerp.copy(perp.normalize());
+  c.floatAmp = c.contentH * CONTENT_FLOAT_AMP;
+  c.floatTick = 0;
+  if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0 * CONTENT_DISPLAY_SCALE);
+}
+
+// Close: author the retreat path from wherever the object floats back to over-the-box.
+function beginRetreat(c, root, now){
+  c.retreatFrom.copy(c.holder.position);
+  c.retreatTo.set(c.cx, c.showY, c.cz);
+  const dir = c.retreatTo.clone().sub(c.retreatFrom);
+  const len = Math.max(dir.length(), 1e-6);
+  const mid = c.retreatFrom.clone().addScaledVector(dir, 0.5);
+  c.retreatCtrl.copy(mid).addScaledVector(UP_LOCAL, len * CONTENT_ARC_LIFT);
+  c.state = 'retreat';
+  c.t0 = now; c.t1 = now + CONTENT_RETREAT_MS;
+  if (c.contentRoot){   // guarantee a valid starting scale for the descent
+    const cur = c.contentRoot.scale.x / c.scale0;
+    c.fromScale = isFinite(cur) ? cur : 1;
+  }
+}
+
+// Advance the content choreography. Returns true when fully settled/hidden.
+// Sets c.active = true while the scene still needs continuous redraws.
+function updateContentMotion(st, now){
+  const c = st.content;
+  if (!c) return true;
+  const root = st.root;
+  const clamp01 = () => (c.t1 > c.t0) ? Math.max(0, Math.min(1, (now - c.t0) / (c.t1 - c.t0))) : 1;
+
+  if (c.state === 'prep'){
+    c.active = true;
+    if (c.failed && !c.contentRoot){        // nothing loadable: open the box without a character
+      c.state = 'hidden';
+      c.active = false;
+      return true;
+    }
+    if (!c.contentRoot) return false;       // still loading: don't rise yet
+    if (now < c.t0) return false;           // waiting for the flaps to clear
+    c.state = 'rising';
+    c.t0 = now; c.t1 = now + CONTENT_RISE_MS;
+    c.fromY = c.insideY; c.toY = c.showY;
+    c.holder.visible = true;
+  }
+  if (c.state === 'rising'){
+    c.active = true;
+    const u = clamp01();
+    const e = easeOutCubic(u);
+    c.holder.position.x = c.cx; c.holder.position.z = c.cz;
+    c.holder.position.y = c.fromY + (c.toY - c.fromY) * e;
+    if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0 * (1 + 0.12 * Math.sin(Math.PI * u)));
+    setContentGlow(st, 0.5 * Math.sin(Math.PI * u));
+    if (u >= 1){
+      c.holder.position.set(c.cx, c.showY, c.cz);
+      if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0);
+      beginApproach(c, root, now);          // -> phase B
+    }
+    return false;
+  }
+  if (c.state === 'approach'){
+    c.active = true;
+    const u = clamp01();
+    const e = easeInOutCubic(u);
+    quadBezier(c.pStartLocal, c.pCtrlLocal, c.pEndLocal, e, c.holder.position);
+    if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0 * (1 + (CONTENT_DISPLAY_SCALE - 1) * e));
+    setContentGlow(st, 0.28 * (1 - u));
+    if (u >= 1) enterPresent(c, now);       // -> phase C
+    return false;
+  }
+  if (c.state === 'present'){
+    // idle float, updated every other frame (~30 fps) to stay light on Android
+    c.floatTick = (c.floatTick + 1) % 2;
+    if (c.floatTick !== 0){ c.active = false; return true; }
+    const t = (now - c.t0) / CONTENT_FLOAT_MS;
+    c.holder.position.copy(c.floatBase)
+      .addScaledVector(UP_LOCAL, c.floatAmp * Math.sin(t * Math.PI * 2))
+      .addScaledVector(c.floatPerp, c.floatAmp * 0.5 * Math.cos(t * Math.PI * 2));
+    setContentGlow(st, 0.20 * Math.max(0, 1 - (now - c.t0) / CONTENT_PAUSE_MS));
+    c.active = true;
+    return true;                            // settled: keeps floating until closed
+  }
+  if (c.state === 'retreat'){
+    c.active = true;
+    const u = clamp01();
+    const e = easeInOutCubic(u);
+    quadBezier(c.retreatFrom, c.retreatCtrl, c.retreatTo, e, c.holder.position);
+    if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0 * (c.fromScale + (1 - c.fromScale) * e));
+    setContentGlow(st, 0.12 * (1 - u));
+    if (u >= 1){
+      c.holder.position.set(c.cx, c.showY, c.cz);
+      c.state = 'sinking';
+      c.t0 = now; c.t1 = now + CONTENT_SINK_MS;
+      c.fromY = c.showY; c.toY = c.insideY;
+    }
+    return false;
+  }
+  if (c.state === 'sinking'){
+    c.active = true;
+    const u = clamp01();
+    const e = easeOutCubic(u);
+    c.holder.position.x = c.cx; c.holder.position.z = c.cz;
+    c.holder.position.y = c.fromY + (c.toY - c.fromY) * e;
+    if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0 * (1 - 0.05 * u));
+    setContentGlow(st, 0.08 * (1 - u));
+    if (u >= 1){
+      c.holder.visible = false;
+      c.holder.position.set(c.cx, c.insideY, c.cz);
+      c.state = 'hidden';
+      c.active = false;
+      setContentGlow(st, 0);
+      return true;
+    }
+    return false;
+  }
+  // hidden
+  c.holder.visible = false;
+  if (c.contentRoot) c.contentRoot.scale.setScalar(c.scale0);   // reset the character for its next turn
+  c.holder.position.set(c.cx, c.insideY, c.cz);
+  setContentGlow(st, 0);
+  c.active = false;
+  return true;
+}
+
+function updateBoxButtonLabel(){
+  const el = document.getElementById('btnBoxLabel');
+  if (!el) return;
+  const st = activeBox();
+  el.textContent = (st && st.open) ? '🔒 Cerrar caja' : '📦 Abrir caja';
+}
+
+// This GLB has four REAL flap nodes and its own baked opening animation. We do not
+// re-invent the motion: we feed that clip to an AnimationMixer and scrub its time with
+// the original choreography phase (buildBox.ts). Opening travels 0 -> HOLD_OPEN; closing
+// travels forward through the closing half and lands on 0 (exactly as the source demo).
+function resetPremiumBox(){
+  if (!premiumState) return;
+  // Release the content resources that disposeModel() cannot reach (Sprite halo is
+  // not a Mesh): its material and the radial-gradient texture.
+  const c = premiumState.content;
+  if (c && c.halo){
+    if (c.halo.material && c.halo.material.map) c.halo.material.map.dispose();
+    if (c.halo.material) c.halo.material.dispose();
+  }
+  // Dispose every prepared character (the active one included) and empty the cache.
+  // contentSeqIndex is intentionally NOT reset: the surprise sequence is session-wide.
+  for (const entry of contentCache.values()){
+    if (entry.croot.parent) entry.croot.parent.remove(entry.croot);
+    disposeModel(entry.croot);
+  }
+  contentCache.clear();
+  premiumState.mixer.stopAllAction();
+  premiumState.mixer.uncacheRoot(premiumState.root);
+  premiumState = null;
+}
+
+// --- original choreography, ported verbatim from buildBox.ts (fallback only) ---
+function premiumSeg(t, a, b, from, to){
+  if (t <= a) return from;
+  if (t >= b) return to;
+  const u = (t - a) / (b - a);
+  const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;   // easeInOutCubic
+  return from + (to - from) * e;
+}
+// [frontBack, leftRight] normalised 0..1 over one cycle; majors clear before minors.
+function premiumFlapSequence(p){
+  const q = ((p % 1) + 1) % 1;
+  const fb = q < 0.5 ? premiumSeg(q, 0.07, 0.21, 0, 1) : premiumSeg(q, 0.8, 0.94, 1, 0);
+  const lr = q < 0.5 ? premiumSeg(q, 0.25, 0.39, 0, 1) : premiumSeg(q, 0.62, 0.76, 1, 0);
+  return [fb, lr];
+}
+
+// Faithful clip rebuilt from the original math, used only if the GLB carries no clip.
+function buildPremiumClip(){
+  const fps = 30;
+  const frames = Math.round(PREMIUM_CYCLE * fps) + 1;
+  const times = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) times[i] = i / fps;
+  const tracks = [];
+  const q = new THREE.Quaternion();
+  for (const name of PREMIUM_FLAPS){
+    const info = PREMIUM_PIVOTS[name];
+    const vals = new Float32Array(frames * 4);
+    for (let i = 0; i < frames; i++){
+      const [fb, lr] = premiumFlapSequence(times[i] / PREMIUM_CYCLE);
+      const t = (name === 'Flap_Front' || name === 'Flap_Back') ? fb : lr;
+      q.setFromAxisAngle(info.axis, info.sign * t * PREMIUM_OPEN_ANGLE);
+      vals[i * 4 + 0] = q.x; vals[i * 4 + 1] = q.y; vals[i * 4 + 2] = q.z; vals[i * 4 + 3] = q.w;
+    }
+    tracks.push(new THREE.QuaternionKeyframeTrack(`${name}.quaternion`, times, vals));
+  }
+  return new THREE.AnimationClip('Flap_Open_Close', PREMIUM_CYCLE, tracks);
+}
+
+function setupPremiumBox(root, animations){
+  const found = PREMIUM_FLAPS.filter((n) => root.getObjectByName(n));
+  if (found.length < PREMIUM_FLAPS.length) return;   // not the premium box
+  // Prefer the box's OWN exported clip; fall back to the ported choreography.
+  let clip = (animations || []).find((a) => a && a.tracks && a.tracks.some((t) => /Flap_/.test(t.name)));
+  if (!clip || !clip.tracks.length) clip = buildPremiumClip();
+  const mixer = new THREE.AnimationMixer(root);
+  const action = mixer.clipAction(clip);
+  action.play();   // we position it by scrubbing (mixer.setTime), never by advancing dt
+  premiumState = {
+    root, mixer, action, clip,
+    duration: clip.duration || PREMIUM_CYCLE,
+    phase: 0, open: false, animating: false, lastT: 0,
+    content: null
+  };
+  mixer.setTime(0);   // start fully closed
+  setupPremiumContent(root);   // sequential surprise characters live inside this box
+  updateBoxButtonLabel();
+  const wrap = document.getElementById('boxControls');
+  if (wrap) wrap.classList.add('show');
+  needsRender = true;
+}
+
+function togglePremiumBox(){
+  if (!premiumState || premiumState.animating) return;   // ignore taps while animating
+  const st = premiumState;
+  st.open = !st.open;
+  st.animating = true;
+  st.lastT = performance.now();
+  const c = st.content;
+  if (c){
+    if (st.open){
+      c.state = 'prep';                  // wait CONTENT_OPEN_DELAY, then rise
+      c.t0 = st.lastT + CONTENT_OPEN_DELAY;
+      c.failed = false;
+      c.active = true;
+      requestContentForOpen(st);         // pick + load (or reuse) the next eligible character
+    } else {
+      c.pendingToken++;                  // cancel any in-flight load for the closing box
+      c.failed = false;
+      c.holder.visible = true;
+      beginRetreat(c, st.root, st.lastT);   // glide back over the box, then sink
+      c.active = true;
+    }
+  }
+  updateBoxButtonLabel();
+  needsRender = true;
+}
+
+function updatePremiumBox(){
+  const st = premiumState;
+  if (!st) return false;
+  const now = performance.now();
+
+  let phaseReached = false;
+  if (st.animating){
+    let dt = (now - st.lastT) / 1000;
+    st.lastT = now;
+    dt = Math.min(dt, 0.05);
+    const target = st.open ? PREMIUM_HOLD_OPEN : 0;
+    const fwd = target >= st.phase ? target - st.phase : 1 - st.phase + target;   // forward travel
+    const step = dt * PREMIUM_TRAVEL_SPEED;
+    phaseReached = fwd < 1e-6 || step >= fwd;
+    st.phase = phaseReached ? target : (st.phase + step) % 1;
+    st.mixer.setTime(st.phase * st.duration);   // scrub the GLB's own clip to that phase
+  }
+
+  const motionDone = updateContentMotion(st, now);
+
+  if (st.animating && phaseReached && motionDone){
+    st.animating = false;                // flaps arrived AND the content settled
+    updateBoxButtonLabel();              // done: offer the opposite action
+  }
+
+  const c = st.content;
+  const busy = st.animating || (c && c.active);
+  return busy;
+}
+
+/* ==================== MYSTERY BOX ("Caja sorpresa") ==================== */
+// The GLB's own animation is empty, so the four flap pivots are driven here with
+// the original staggered choreography: each pivot eases independently from its
+// current angle to the target, offset in time (open: index order, close: reverse).
+function setupMysteryBox(root){
+  const entries = [];
+  for (const def of MYSTERY_FLAPS){
+    const pivot = root.getObjectByName(def.node);
+    if (!pivot) return;                    // not the mystery box: leave it alone
+    pivot.rotation[def.axis] = 0;          // rest pose: fully closed
+    entries.push({ pivot, axis: def.axis, angle: def.angle, from: 0, to: 0, startsAt: 0, duration: 0, done: true });
+  }
+  mysteryState = { root, entries, open: false, animating: false };
+  updateBoxButtonLabel();
+  const wrap = document.getElementById('boxControls');
+  if (wrap) wrap.classList.add('show');
+  needsRender = true;
+}
+
+function toggleMysteryBox(){
+  if (!mysteryState || mysteryState.animating) return;   // ignore taps while animating
+  const st = mysteryState;
+  st.open = !st.open;
+  st.animating = true;
+  const now = performance.now();
+  const n = st.entries.length;
+  st.entries.forEach((e, i) => {
+    e.from = e.pivot.rotation[e.axis];
+    e.to = st.open ? e.angle : 0;
+    e.startsAt = now + (st.open ? i * MYSTERY_OPEN_STAGGER : (n - 1 - i) * MYSTERY_CLOSE_STAGGER);
+    e.duration = st.open ? MYSTERY_OPEN_MS : MYSTERY_CLOSE_MS;
+    e.done = false;
+  });
+  updateBoxButtonLabel();
+  needsRender = true;
+}
+
+function updateMysteryBox(){
+  const st = mysteryState;
+  if (!st || !st.animating) return false;
+  const now = performance.now();
+  let allDone = true;
+  for (const e of st.entries){
+    if (e.done) continue;
+    if (now < e.startsAt){ allDone = false; continue; }   // staggered: not started yet
+    const p = Math.min(1, (now - e.startsAt) / e.duration);
+    e.pivot.rotation[e.axis] = e.from + (e.to - e.from) * easeOutCubic(p);
+    if (p >= 1){ e.pivot.rotation[e.axis] = e.to; e.done = true; }
+    else allDone = false;
+  }
+  if (allDone){
+    st.animating = false;
+    updateBoxButtonLabel();                 // done: offer the opposite action
+  }
+  return st.animating;
+}
+
+function resetMysteryBox(){
+  if (!mysteryState) return;
+  for (const e of mysteryState.entries) e.pivot.rotation[e.axis] = 0;   // back to closed
+  mysteryState = null;
+}
+
+// The single "Abrir caja / Cerrar caja" button drives whichever box is loaded.
+function activeBox(){ return premiumState || mysteryState; }
+
+function toggleBoxControl(){
+  if (premiumState) togglePremiumBox();
+  else if (mysteryState) toggleMysteryBox();
+}
+
+// Stop both box controls and hide the button (called on every model change).
+function resetBoxes(){
+  resetPremiumBox();
+  resetMysteryBox();
+  const wrap = document.getElementById('boxControls');
+  if (wrap) wrap.classList.remove('show');
+}
+
 /* ============================ UI ============================ */
 function bindUI(){
   const modelsRow = $('models');
@@ -812,6 +1548,8 @@ function bindUI(){
   $('btnReset').addEventListener('click', () => {
     if (current) resetCamera();
   });
+
+  $('btnBox').addEventListener('click', toggleBoxControl);
 
   $('btnLight').addEventListener('click', (e) => {
     const light = document.documentElement.classList.toggle('light');
@@ -920,7 +1658,9 @@ function loop(){
   requestAnimationFrame(loop);
   controls.update();  // returns true while interacting / damping / autorotating
   const animating = updateAnimations();
-  if (needsRender || controls.autoRotate || animating){
+  const premiumAnimating = updatePremiumBox();
+  const mysteryAnimating = updateMysteryBox();
+  if (needsRender || controls.autoRotate || animating || premiumAnimating || mysteryAnimating){
     renderer.render(scene, camera);
     needsRender = false;
     if (fpsEnabled) updateFps();

@@ -76,13 +76,29 @@
     background:var(--panel);border-top:1px solid var(--panel-border);
     backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
     padding:12px 12px calc(12px + var(--safe-b));display:flex;flex-direction:column;gap:12px;}
-  #models{display:flex;gap:10px;}
-  .modelbtn{flex:1;min-height:54px;border-radius:14px;border:1px solid var(--panel-border);
-    background:rgba(255,255,255,.05);color:var(--text);font-size:15px;font-weight:600;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;}
-  .modelbtn small{font-size:11px;font-weight:500;color:var(--muted);}
-  .modelbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text);}
+  /* Horizontal, touch-scrollable model bar (one row of compact cards) */
+  #modelsWrap{position:relative;margin:0 -12px;}
+  #models{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;scroll-snap-type:x proximity;
+    touch-action:pan-x;overscroll-behavior-x:contain;padding:2px 12px;}
+  #models::-webkit-scrollbar{display:none;}
+  .modelbtn{flex:0 0 auto;scroll-snap-align:start;min-width:84px;max-width:44vw;min-height:50px;
+    padding:8px 14px;border-radius:14px;border:1px solid var(--panel-border);
+    background:rgba(255,255,255,.05);color:var(--text);font-size:14px;font-weight:600;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+    cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s,transform .1s;}
+  .modelbtn small{font-size:10px;font-weight:500;color:var(--muted);}
+  .modelbtn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text);
+    box-shadow:0 4px 14px rgba(79,140,255,.24);}
   .modelbtn.active small{color:var(--accent);}
+  .modelbtn:active{transform:scale(.97);}
+  /* Subtle edge fades hint that the row scrolls (enabled by JS) */
+  #modelsWrap::before,#modelsWrap::after{content:"";position:absolute;top:2px;bottom:2px;width:26px;
+    pointer-events:none;z-index:2;opacity:0;transition:opacity .2s;}
+  #modelsWrap::before{left:0;background:linear-gradient(90deg,var(--panel),transparent);}
+  #modelsWrap::after{right:0;background:linear-gradient(270deg,var(--panel),transparent);}
+  #modelsWrap.can-left::before{opacity:1;}
+  #modelsWrap.can-right::after{opacity:1;}
   #quality{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
   .qbtn{min-height:40px;border-radius:12px;border:1px solid var(--panel-border);
     background:rgba(255,255,255,.05);color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;}
@@ -165,15 +181,20 @@
   </div>
 
   <div id="panel">
-    <div id="models">
-      <button class="modelbtn active" data-model="Carro.glb" data-label="Carro">Carro<small>Carro.glb · 6 MB</small></button>
-      <button class="modelbtn" data-model="conejo.glb" data-label="Conejo">Conejo<small>conejo.glb · 26 MB</small></button>
-      <button class="modelbtn" data-model="Conejoo.glb" data-label="Conejoo">Conejoo<small>Conejoo.glb · 39 MB</small></button>
+    <div id="modelsWrap">
+      <div id="models">
+        <button class="modelbtn active" data-model="Carro.glb" data-label="Carro">Carro<small>Carro.glb · 6 MB</small></button>
+        <button class="modelbtn" data-model="conejo.glb" data-label="Conejo">Conejo<small>conejo.glb · 26 MB</small></button>
+        <button class="modelbtn" data-model="Conejoo.glb" data-label="Conejoo">Conejoo<small>Conejoo.glb · 39 MB</small></button>
+        <button class="modelbtn" data-model="CarroPro.glb" data-label="CarroPro">CarroPro<small>CarroPro.glb · 354 KB</small></button>
+        <button class="modelbtn" data-model="Caja.glb" data-label="Caja">Caja<small>Caja.glb · 883 KB</small></button>
+        <button class="modelbtn" data-model="Ratón.glb" data-label="Ratón">Ratón<small>Ratón.glb · 23 MB</small></button>
+      </div>
     </div>
     <div id="quality">
       <button class="qbtn" data-q="calidad">Calidad</button>
-      <button class="qbtn active" data-q="equilibrado">Equilibrado</button>
-      <button class="qbtn" data-q="rendimiento">Rendimiento</button>
+      <button class="qbtn" data-q="equilibrado">Equilibrado</button>
+      <button class="qbtn active" data-q="rendimiento">Rendimiento</button>
     </div>
     <div id="anims">
       <button class="tool" id="btnAddAnim" title="Añadir animación" aria-label="Añadir animación">
@@ -190,7 +211,7 @@
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         Fondo claro
       </button>
-      <button class="tool on" id="btnGround">
+      <button class="tool" id="btnGround">
         <svg viewBox="0 0 24 24"><path d="M3 20h18M6 20V9l6-4 6 4v11"/></svg>
         Suelo
       </button>
@@ -260,7 +281,7 @@ const QUALITY = {
   equilibrado: { dprMax: 1.25, shadows: false, mapSize: 1024, lights: true  },
   rendimiento: { dprMax: 1.0,  shadows: false, mapSize: 512,  lights: false }
 };
-let qualityKey = isMobile ? 'equilibrado' : 'calidad';
+let qualityKey = 'rendimiento';   // default profile: Rendimiento
 
 let renderer, scene, controls, camera;
 let lights = null;       // { ambient, key, fill, rim }
@@ -396,13 +417,14 @@ function buildGround(){
   ground = new THREE.Mesh(geo, mat);
   ground.name = 'ground';
   ground.receiveShadow = true;
-  ground.visible = true;
+  ground.visible = false;   // no visual floor: model floats over the background
   scene.add(ground);
 }
 
 /* ============================ LOADING ============================ */
 function loadModel(file, label){
   const token = ++loadToken;
+  applyQuality('rendimiento');   // every model open/selection starts at Rendimiento
   showLoading(label);
 
   // Dispose previous model first (free GPU memory)
@@ -749,14 +771,33 @@ function disposeModel(root){
 
 /* ============================ UI ============================ */
 function bindUI(){
+  const modelsRow = $('models');
+  const modelsWrap = $('modelsWrap');
+
+  // Show/hide the subtle edge fades depending on the scroll position of the row.
+  function updateModelsHint(){
+    if (!modelsRow || !modelsWrap) return;
+    const max = modelsRow.scrollWidth - modelsRow.clientWidth;
+    modelsWrap.classList.toggle('can-left', modelsRow.scrollLeft > 2);
+    modelsWrap.classList.toggle('can-right', modelsRow.scrollLeft < max - 2);
+  }
+
   document.querySelectorAll('.modelbtn').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (btn.classList.contains('active')) return;
       document.querySelectorAll('.modelbtn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
+      // Bring the chosen card fully into view inside the horizontal row.
+      btn.scrollIntoView({ behavior:'smooth', block:'nearest', inline:'center' });
       loadModel(btn.dataset.model, btn.dataset.label);
     });
   });
+
+  if (modelsRow){
+    modelsRow.addEventListener('scroll', updateModelsHint, { passive:true });
+    window.addEventListener('resize', updateModelsHint);
+    requestAnimationFrame(updateModelsHint);   // run once layout is known
+  }
 
   $('btnRotate').addEventListener('click', (e) => {
     autoRotate = !autoRotate;

@@ -41,11 +41,12 @@ Modelos registrados actualmente en el selector:
 | Carro | `Carro.glb` | Sí |
 | Conejo | `conejo.glb` | Sí |
 | Conejoo | `Conejoo.glb` | Sí |
-| CarroPro | `CarroPro.glb` | No |
-| Caja | `Caja.glb` | No |
-| Ratón | `Ratón.glb` | No |
+| CarroPro | `CarroPro.glb` | Sí |
+| Caja | `Caja.glb` | Sí |
+| Ratón | `Ratón.glb` | Sí |
+| Huesped | `Huesped.glb` | Sí |
 
-> **Importante:** los archivos `.glb` deben estar **en el mismo directorio que `visor-3d.html`** para que se carguen. Los nombres distinguen mayúsculas/minúsculas y acentos. Los modelos marcados como «No» no están en el repositorio y deben añadirse por separado para poder visualizarlos.
+> **Importante:** los archivos `.glb` deben estar **en el mismo directorio que `visor-3d.html`** para que se carguen. Los nombres distinguen mayúsculas/minúsculas y acentos.
 
 ## Cómo ejecutar
 

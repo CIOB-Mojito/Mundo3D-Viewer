@@ -45,6 +45,7 @@ Modelos registrados actualmente en el selector:
 | Caja | `Caja.glb` | Sí |
 | Ratón | `Ratón.glb` | Sí |
 | Huesped | `Huesped.glb` | Sí |
+| No lo sé | `No lo se.glb` | Sí |
 
 > **Importante:** los archivos `.glb` deben estar **en el mismo directorio que `visor-3d.html`** para que se carguen. Los nombres distinguen mayúsculas/minúsculas y acentos.
 
